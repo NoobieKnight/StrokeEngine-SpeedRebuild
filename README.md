@@ -3,6 +3,17 @@ A library to create a variety of stroking motions with a stepper or servo motor 
 
 Every DIY fucking machine with a linear position drive powered by a stepper or servo motor can be used with this library. 
 
+## Fork specific changes
+This fork of StrokeEngine is focused on two parts, working with OSSM (drop in replacement) and using a fixed speed instead of TPM or time of stroke
+Booth time of stroke and speed in mm/s are sent to the patterns. This means that existing community patterns will not need modification
+
+The fixed speed setting is currently based on a percent 0-100 of the machines maximum speed. Keep in mind that the machine might not reach this speed depending on stroke and acceleration
+I'm thinking of changing this to a logarithmic scale instead of linear scale but I'll probably keep both versions availible
+
+Another change is the addition of the pattern function _calculatePatternPositions. This function is called after speed, stroke, depth or sensation is changed. This can be used to calculate the pattern variables once to reduce the cpu load
+
+I'll also make a seperate branch of this fork that is specifically made to work with my own version of OSSM
+
 ## Concepts
 StrokeEngine takes full advantage of the freedom a servo / stepper driven stroking or fucking machine can provide over fixed cam-driven designs. To this date there are only few commercial offerings using this advantage. And often so the implementation is rather boring, not utilizing the full possibilities of such a linear position drive. 
 

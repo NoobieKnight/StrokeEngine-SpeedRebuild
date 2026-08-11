@@ -1,23 +1,28 @@
 /**
  *   StrokeEngine
  *   A library to create a variety of stroking motions with a stepper or servo motor on an ESP32.
- *   https://github.com/theelims/StrokeEngine 
+ *   https://github.com/theelims/StrokeEngine
  *
  * Copyright (C) 2022 theelims <elims@gmx.net>
  *
  * This software may be modified and distributed under the terms
  * of the MIT license.  See the LICENSE file for details.
+ *
+ * Modified for use in OSSM with speed/acceleration instead of time of stroke
+ * NoobieKnight
+ *
  */
 
 #pragma once
 
 #include <Arduino.h>
+#include "FastAccelStepper.h"
 #include <pattern.h>
 
 // Debug Levels
 //#define DEBUG_TALKATIVE             // Show debug messages from the StrokeEngine on Serial
 //#define DEBUG_STROKE                // Show debug messaged for each individual stroke on Serial
-#define DEBUG_CLIPPING              // Show debug messages when motions violating the machine 
+#define DEBUG_CLIPPING              // Show debug messages when motions violating the machine
                                     // physics are commanded
 
 /**************************************************************************/
@@ -27,16 +32,16 @@
 /**************************************************************************/
 typedef struct {
   float physicalTravel;       /*> What is the maximum physical travel in mm */
-  float keepoutBoundary;      /*> Soft endstop preventing hard crashes in mm. Will be 
-                               *  subtracted twice from physicalTravel. Should be 
-                               *  sufficiently to completley drive clear from 
+  float keepoutBoundary;      /*> Soft endstop preventing hard crashes in mm. Will be
+                               *  subtracted from physicalTravel. Should be
+                               *  sufficiently to completley drive clear from
                                *  homing switch */
 } machineGeometry;
 
 /**************************************************************************/
 /*!
-  @brief  Struct defining the motor (stepper or servo with STEP/DIR 
-  interface) and the motion system translating the rotation into a 
+  @brief  Struct defining the motor (stepper or servo with STEP/DIR
+  interface) and the motion system translating the rotation into a
   linear motion.
 */
 /**************************************************************************/
@@ -45,8 +50,8 @@ typedef struct {
   float maxAcceleration;      /*> Maximum acceleration in mm/s^2 */
   float stepsPerMillimeter;   /*> Number of steps per millimeter */
   bool invertDirection;       /*> Set to true to invert the direction signal
-                               *  The firmware expects the home switch to be located at the 
-                               *  end of an retraction move. That way the machine homes 
+                               *  The firmware expects the home switch to be located at the
+                               *  end of an retraction move. That way the machine homes
                                *  itself away from the body. Home position is -KEEPOUTBOUNDARY */
   bool enableActiveLow;       /*> Polarity of the enable signal. True for active low. */
   int stepPin;                /*> Pin connected to the STEP input */
@@ -56,7 +61,7 @@ typedef struct {
 
 /**************************************************************************/
 /*!
-  @brief  Struct defining the endstop properties like pin, pinmode, polarity 
+  @brief  Struct defining the endstop properties like pin, pinmode, polarity
   and homing direction.
 */
 /**************************************************************************/
@@ -93,13 +98,15 @@ static String verboseState[] = {
 /**************************************************************************/
 /*!
   @brief  Stroke Engine provides a convenient package for stroking motions
-  created by stepper or servo motors. It's internal states are handled by a 
-  finite state machine. A pattern generator allows to creat a variety of 
+  created by stepper or servo motors. It's internal states are handled by a
+  finite state machine. A pattern generator allows to creat a variety of
   motion profiles. Under the hood FastAccelStepper is used for interfacing
-  a stepper or servo motor vie a STEP/DIR interface.  
+  a stepper or servo motor vie a STEP/DIR interface.
 */
 /**************************************************************************/
 class StrokeEngine {
+    FastAccelStepper *_servo;
+
     public:
 
         /**************************************************************************/
@@ -108,52 +115,56 @@ class StrokeEngine {
           accordingly. StrokeEngine is in state UNDEFINED
         */
         /**************************************************************************/
-        void begin(machineGeometry *physics, motorProperties *motor);
+        void begin(machineGeometry *physics, motorProperties *motor, FastAccelStepper *servo);
 
         /**************************************************************************/
         /*!
-          @brief  Set the speed of a stroke. Speed is given in Strokes per Minute
-          and internally calculated to the time a full stroke needs to complete. 
-          Settings tale effect with next stroke, or after calling 
-          applyNewSettingsNow().
-          @param speed Strokes per Minute. Is constrained from 0.5 to 6000 
-          @param applyNow Set to true if changes should take effect immediately 
+          @brief  Set the desired peak motor speed as a percentage of
+          motorProperties.maxSpeed. The library converts this into the appropriate
+          timeOfStroke for the current stroke length so the pattern's peak step
+          rate equals `speedPercent% * maxStepPerSecond`. timeOfStroke is
+          automatically recomputed whenever setStroke() or setMaxSpeed() is called,
+          so changing stroke length keeps the peak motor speed constant. Settings
+          take effect with next stroke, or after calling applyNewSettingsNow().
+          Speed is also provided as step/s based on the maximum speed off the motor speed
+          @param speedPercent Peak motor speed as a percentage. Constrained to [0, 100].
+          @param applyNow Set to true if changes should take effect immediately
         */
         /**************************************************************************/
-        void setSpeed(float speed, bool applyNow);
+        void setSpeed(float speedPercent, bool applyNow);
 
         /**************************************************************************/
         /*!
-          @brief  Get the speed of a stroke. Speed is returned as Strokes per Minute. 
-          @return Strokes per Minute.
+          @brief  Get the configured peak speed percentage.
+          @return Peak motor speed as a percentage [0, 100].
         */
         /**************************************************************************/
         float getSpeed();
 
         /**************************************************************************/
         /*!
-          @brief  Set the depth of a stroke. Settings tale effect with next stroke, 
+          @brief  Set the depth of a stroke. Settings tale effect with next stroke,
           or after calling applyNewSettingsNow().
-          @param depth Depth in [mm]. Is constrained from 0 to TRAVEL 
-          @param applyNow Set to true if changes should take effect immediately 
+          @param depth Depth in [mm]. Is constrained from 0 to TRAVEL
+          @param applyNow Set to true if changes should take effect immediately
         */
         /**************************************************************************/
         void setDepth(float depth, bool applyNow);
 
         /**************************************************************************/
         /*!
-          @brief  Returns the depth of a stroke. 
-          @return Depth in [mm]. Is constrained from 0 to TRAVEL 
+          @brief  Returns the depth of a stroke.
+          @return Depth in [mm]. Is constrained from 0 to TRAVEL
         */
         /**************************************************************************/
         float getDepth();
 
         /**************************************************************************/
         /*!
-          @brief  Set the stroke length of a stroke. Settings take effect with next 
+          @brief  Set the stroke length of a stroke. Settings take effect with next
           stroke, or after calling applyNewSettingsNow().
-          @param stroke Stroke length in [mm]. Is constrained from 0 to TRAVEL 
-          @param applyNow Set to true if changes should take effect immediately 
+          @param stroke Stroke length in [mm]. Is constrained from 0 to TRAVEL
+          @param applyNow Set to true if changes should take effect immediately
         */
         /**************************************************************************/
         void setStroke(float stroke, bool applyNow);
@@ -168,21 +179,21 @@ class StrokeEngine {
 
         /**************************************************************************/
         /*!
-          @brief  Set the sensation of a pattern. Sensation is an additional 
-          parameter a pattern may use to alter its behaviour. Settings takes 
+          @brief  Set the sensation of a pattern. Sensation is an additional
+          parameter a pattern may use to alter its behaviour. Settings takes
           effect with next stroke, or after calling applyNewSettingsNow().
-          @param sensation  Sensation in [a.u.]. Is constrained from -100 to 100  
+          @param sensation  Sensation in [a.u.]. Is constrained from -100 to 100
                         with 0 beeing assumed as neutral.
-          @param applyNow Set to true if changes should take effect immediately 
+          @param applyNow Set to true if changes should take effect immediately
         */
         /**************************************************************************/
         void setSensation(float sensation, bool applyNow);
 
         /**************************************************************************/
         /*!
-          @brief  Get the sensation of a pattern. Sensation is an additional 
+          @brief  Get the sensation of a pattern. Sensation is an additional
           parameter a pattern may use to alter its behaviour.
-          @return Sensation in [a.u.]. Is constrained from -100 to 100  
+          @return Sensation in [a.u.]. Is constrained from -100 to 100
                         with 0 beeing assumed as neutral.
         */
         /**************************************************************************/
@@ -190,15 +201,15 @@ class StrokeEngine {
 
         /**************************************************************************/
         /*!
-          @brief  Choose a pattern for the StrokeEngine. Settings take effect with 
-          next stroke, or after calling applyNewSettingsNow(). 
+          @brief  Choose a pattern for the StrokeEngine. Settings take effect with
+          next stroke, or after calling applyNewSettingsNow().
           @param patternIndex  Index of a pattern
-          @param applyNow Set to true if changes should take effect immediately 
-          @return TRUE on success, FALSE, if patternIndex is invalid. Previous 
+          @param applyNow Set to true if changes should take effect immediately
+          @return TRUE on success, FALSE, if patternIndex is invalid. Previous
                         pattern will be retained.
         */
         /**************************************************************************/
-        bool setPattern(int patternIndex, bool applyNow);
+        bool setPattern(Pattern *nextPattern, bool applyNow);
 
         /**************************************************************************/
         /*!
@@ -211,7 +222,7 @@ class StrokeEngine {
         /**************************************************************************/
         /*!
           @brief  Creates a FreeRTOS task to run a stroking pattern. Only valid in
-          state READY. Pattern is initialized with the values from the set 
+          state READY. Pattern is initialized with the values from the set
           functions. If the task is running, state is PATTERN.
           @return TRUE when task was created and motion starts, FALSE on failure.
         */
@@ -230,15 +241,15 @@ class StrokeEngine {
         /*!
           @brief  Enable the servo/stepper and do the homing procedure. Drives towards
           the endstop with HOMING_SPEED. Function is non-blocking and backed by a task.
-          Optionally a callback can be given to receive feedback if homing succeeded 
-          going in state READY. If homing switch is not found after traveling 
-          MAX_TRAVEL it times out, disables the servo and goes into UNDEFINED. 
-          @param endstop Pointer to a endstopProperties struct defining all relevant 
-                        properties like pin, pinmode, homing direction & signal  
+          Optionally a callback can be given to receive feedback if homing succeeded
+          going in state READY. If homing switch is not found after traveling
+          MAX_TRAVEL it times out, disables the servo and goes into UNDEFINED.
+          @param endstop Pointer to a endstopProperties struct defining all relevant
+                        properties like pin, pinmode, homing direction & signal
                         polarity.
-          @param speed  Speed in mm/s used for finding the homing switch. 
+          @param speed  Speed in mm/s used for finding the homing switch.
                         Defaults to 5.0 mm/s
-          @param callBackHoming Callback function is called after homing is done. 
+          @param callBackHoming Callback function is called after homing is done.
                         Function parametere holds a bool containing the success (TRUE)
                         or failure (FALSE) of homing.
         */
@@ -248,21 +259,21 @@ class StrokeEngine {
 
         /**************************************************************************/
         /*!
-          @brief  If no homing switch is present homing can be done manually. Push 
+          @brief  If no homing switch is present homing can be done manually. Push
           the endeffector all the way in and call thisIsHome(). This enables the
           the servo and sets the position to -KEEPOUT_BOUNDARY
-          @param speed  Speed in mm/s used for finding the homing switch. 
+          @param speed  Speed in mm/s used for finding the homing switch.
                         Defaults to 5.0 mm/s
         */
         /**************************************************************************/
-        void thisIsHome(float speed = 5.0);
+        void thisIsHome(float speed = 5.0, bool resetOrigin = true);
 
         /**************************************************************************/
         /*!
-          @brief  In state PATTERN, SETUPDEPTH and READY this 
-          moves the endeffector to TRAVEL. Can be used for adjustments. Stops any 
+          @brief  In state PATTERN, SETUPDEPTH and READY this
+          moves the endeffector to TRAVEL. Can be used for adjustments. Stops any
           running pattern and ends in state READY.
-          @param speed  Speed in mm/s used for driving to max. 
+          @param speed  Speed in mm/s used for driving to max.
                         Defaults to 10.0 mm/s
           @return TRUE on success, FALSE if state does not allow this.
         */
@@ -271,10 +282,10 @@ class StrokeEngine {
 
         /**************************************************************************/
         /*!
-          @brief  In state PATTERN, SETUPDEPTH and READY this 
+          @brief  In state PATTERN, SETUPDEPTH and READY this
           moves the endeffector to 0. Can be used for adjustments. Stops any running
           pattern and ends in state READY.
-          @param speed  Speed in mm/s used for driving to min. 
+          @param speed  Speed in mm/s used for driving to min.
                         Defaults to 10.0 mm/s
           @return TRUE on success, FALSE if state does not allow this.
         */
@@ -284,12 +295,12 @@ class StrokeEngine {
         /**************************************************************************/
         /*!
           @brief  In state PATTERN and READY this moves the endeffector
-          to DEPTH and enters state SETUPDEPTH. Follows the DEPTH postion 
+          to DEPTH and enters state SETUPDEPTH. Follows the DEPTH postion
           whenever setDepth() is called. Can be used for adjustments. Stops any running
-          pattern. 
-          @param speed  Speed in mm/s used for driving to min. 
+          pattern.
+          @param speed  Speed in mm/s used for driving to min.
                         Defaults to 10.0 mm/s
-          @param fancy  In fancy mode sensation allows to adjust both, depth and 
+          @param fancy  In fancy mode sensation allows to adjust both, depth and
                         stroke. +100 adjusts the depth position, -100 adjusts the
                         stroke position. 0 adjusts the midpoint depth-stroke/2.
           @return TRUE on success, FALSE if state does not allow this.
@@ -307,19 +318,19 @@ class StrokeEngine {
 
         /**************************************************************************/
         /*!
-          @brief  Disables the servo motor instantly and deletes any motion task. 
+          @brief  Disables the servo motor instantly and deletes any motion task.
           Sets state machine to UNDEFINED. Must be followed by homing to enable
-          servo again. 
+          servo again.
         */
         /**************************************************************************/
         void disable();
 
         /**************************************************************************/
         /*!
-          @brief  Makes the pattern list available for the main program to retreive 
+          @brief  Makes the pattern list available for the main program to retreive
           informations like pattern names.
           @param index index of a pattern.
-          @return String holding a pattern name with a certain index. If index is 
+          @return String holding a pattern name with a certain index. If index is
                         out of range it returns "Invalid"
         */
         /**************************************************************************/
@@ -327,19 +338,17 @@ class StrokeEngine {
 
         /**************************************************************************/
         /*!
-          @brief  Makes the pattern list available for the main program to retreive 
+          @brief  Makes the pattern list available for the main program to retreive
           informations like pattern names.
           @return The number of pattern available.
         */
         /**************************************************************************/
-        unsigned int getNumberOfPattern() { 
-          return patternTableSize; 
-        };
+        unsigned int getNumberOfPattern() { return 0; };
 
         /**************************************************************************/
         /*!
-          @brief  Updates the maximum speed number of StrokeEngine. This value is 
-          used to keep alle motions in check and as a safeguard. 
+          @brief  Updates the maximum speed number of StrokeEngine. This value is
+          used to keep all motions in check and as a safeguard.
           @param maxSpeed maximum Speed in mm/s
         */
         /**************************************************************************/
@@ -355,7 +364,7 @@ class StrokeEngine {
 
         /**************************************************************************/
         /*!
-          @brief   Updates the maximum acceleration number of StrokeEngine. This value 
+          @brief   Updates the maximum acceleration number of StrokeEngine. This value
           is used to keep alle motions in check and as a safeguard.
           @param maxAcceleration maximum acceleration in mm/s²
         */
@@ -373,10 +382,10 @@ class StrokeEngine {
         /**************************************************************************/
         /*!
           @brief  Register a callback function that will update telemetry information
-          about StrokeEngine. The provided function will be called whenever a motion 
+          about StrokeEngine. The provided function will be called whenever a motion
           is executed by a manual command or by a pattern. The returned values are the
-          target position of this move, its top speed and wether clipping occurred. 
-          @param callbackTelemetry Function must be of type: 
+          target position of this move, its top speed and wether clipping occurred.
+          @param callbackTelemetry Function must be of type:
           void callbackTelemetry(float position, float speed, bool clipping)
         */
         /**************************************************************************/
@@ -391,7 +400,7 @@ class StrokeEngine {
         int _maxStep;
         int _maxStepPerSecond;
         int _maxStepAcceleration;
-        int _patternIndex = 0;
+        Pattern *pattern = new SimpleStroke("Simple Stroke");
         bool _isHomed = false;
         int _index = 0;
         int _depth;
@@ -399,8 +408,11 @@ class StrokeEngine {
         int _stroke;
         int _previousStroke;
         float _timeOfStroke;
+        float _desiredPeakSpeed;
+        float _speedPercent = 0.0f;
         float _sensation;
         bool _applyUpdate = false;
+        void _recalcTimeOfStroke();
         static void _homingProcedureImpl(void* _this) { static_cast<StrokeEngine*>(_this)->_homingProcedure(); }
         void _homingProcedure();
         static void _strokingImpl(void* _this) { static_cast<StrokeEngine*>(_this)->_stroking(); }
@@ -412,12 +424,12 @@ class StrokeEngine {
         TaskHandle_t _taskStreamingHandle = NULL;
         SemaphoreHandle_t _patternMutex = xSemaphoreCreateMutex();
         void _applyMotionProfile(motionParameter* motion);
-        void(*_callBackHomeing)(bool) = NULL;
+        void(*_callBackHoming)(bool) = NULL;
         void(*_callbackTelemetry)(float, float, bool) = NULL;
-        int _homeingSpeed;
-        int _homeingPin;
-        int _homeingToBack;
-        bool _homeingActiveLow;      /*> Polarity of the homing signal*/
+        int _homingSpeed;
+        int _homingPin;
+        int _homingToBack;
+        bool _homingActiveLow;      /*> Polarity of the homing signal*/
         bool _fancyAdjustment;
         void _setupDepths();
 };
