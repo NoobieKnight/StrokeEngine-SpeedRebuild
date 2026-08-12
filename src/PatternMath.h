@@ -137,4 +137,20 @@ inline float mapSensationToFactor(float maximumFactor, float inputValue, float c
     
 }
 
+/**************************************************************************/
+/*!
+  @brief Calculates the trapezoidal acceleration based on the speed, length
+  and number of phases for the length including acceleration coast and deceleration.
+  @param speedStepsPerS The speed in steps per second
+  @param length The total length of the movement
+  @param phases The number of phases for the movement (Acc, Coast, Dec = 3.
+  More phases = slower acceleration)
+  @returns The calculated trapezoidal acceleration steps per second squared
+*/
+/**************************************************************************/
+inline uint calcTrapezoidalAcceleration(float speedStepsPerS, int length, int phases = 3) {
+    // Implementation for calculating trapezoidal acceleration
+
+    return (phases * speedStepsPerS * speedStepsPerS) / length;
+}
 

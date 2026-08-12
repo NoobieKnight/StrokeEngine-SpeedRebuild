@@ -100,6 +100,7 @@ class Pattern {
         */
         virtual void setSensation(float sensation, float sensationPercent) {
             _sensation = sensation;
+            _sensationPercent = sensationPercent;
             _calculatePatternPositions();
         }
 
@@ -135,6 +136,7 @@ class Pattern {
         float _timeOfStroke;
         float _speedStepsPerS;
         float _sensation = 0.0;
+        float _sensationPercent = 0.0;
         int _index = -1;
         char _name[STRING_LEN];
         motionParameter _nextMove = {0, 0, 0, false};
@@ -195,29 +197,38 @@ class SimpleStroke : public Pattern {
     public:
         SimpleStroke(const char *str) : Pattern(str) {}
 
-        void setTimeOfStroke(float speed, float speedStepsPerS) override {
-             // In & Out have same time, so we need to divide by 2
-            _timeOfStroke = 0.5 * speed;
-        }
-
         motionParameter nextTarget(unsigned int index) {
             // maximum speed of the trapezoidal motion
-            _nextMove.speed = int(1.5 * _stroke/_timeOfStroke);
+            _nextMove.speed = _speed;
 
             // acceleration to meet the profile
-            _nextMove.acceleration = int(3.0 * _nextMove.speed/_timeOfStroke);
+            _nextMove.acceleration = _acceleration;
 
             // odd stroke is moving out
             if (index % 2) {
-                _nextMove.stroke = _depth - _stroke;
+                _nextMove.stroke = _maxPos;
 
             // even stroke is moving in
             } else {
-                _nextMove.stroke = _depth;
+                _nextMove.stroke = _minPos;
+
             }
 
             _index = index;
             return _nextMove;
+        }
+        protected:
+        int _acceleration;
+        int _speed;
+
+        void _calculatePatternPositions() override {
+            _acceleration = min(uint(calcTrapezoidalAcceleration(_speedStepsPerS, _stroke)), _maxAcceleration);
+            _speed = int(_speedStepsPerS);
+
+            // Calculate the start/end of the stroke
+            _minPos = _depth - _stroke;
+            _maxPos = _depth;
+
         }
 };
 
@@ -226,55 +237,60 @@ class SimpleStroke : public Pattern {
   @brief  Simple pattern where the sensation value can change the speed
   ratio between in and out. Sensation > 0 make the in move faster (up to 5x)
   giving a hard pounding sensation. Values < 0 make the out move going
-  faster. This gives a more pleasing sensation. The time for the overall
-  stroke remains the same.
+  faster. This gives a more pleasing sensation.
 */
 /**************************************************************************/
 class TeasingPounding : public Pattern {
     public:
         TeasingPounding(const char *str) : Pattern(str) {}
 
-        motionParameter nextTarget(unsigned int index) {
+        motionParameter nextTarget(unsigned int index) override{
             // odd stroke is moving out
             if (index % 2) {
                 // maximum speed of the trapezoidal motion
-                _nextMove.speed = int(1.5 * _stroke/_timeOfOutStroke);
+                _nextMove.speed = _speedOut;
 
                 // acceleration to meet the profile
-                _nextMove.acceleration = int(3.0 * float(_nextMove.speed)/_timeOfOutStroke);
-                _nextMove.stroke = _depth - _stroke;
+                _nextMove.acceleration = _accOut;
+                _nextMove.stroke = _minPos;
             // even stroke is moving in
             } else {
                 // maximum speed of the trapezoidal motion
-                _nextMove.speed = int(1.5 * _stroke/_timeOfInStroke);
+                _nextMove.speed = _speedIn;
 
                 // acceleration to meet the profile
-                _nextMove.acceleration = int(3.0 * float(_nextMove.speed)/_timeOfInStroke);
-                _nextMove.stroke = _depth;
+                _nextMove.acceleration = _accIn;
+                _nextMove.stroke = _maxPos;
             }
             _index = index;
             return _nextMove;
         }
     protected:
-        float _timeOfFastStroke = 1.0;
-        float _timeOfInStroke = 1.0;
-        float _timeOfOutStroke = 1.0;
-        void _calculatePatternPositions() {
-            // calculate the time it takes to complete the faster stroke
-            // Division by 2 because reference is a half stroke
-            _timeOfFastStroke = (0.5 * _timeOfStroke) / fscale(0.0, 100.0, 1.0, 5.0, abs(_sensation), 0.0);
-            // positive sensation, in is faster
+        int _accIn, _accOut;
+        int _speedIn, _speedOut;
+        void _calculatePatternPositions() override{
+
+            // Calculate the start/end of the stroke
+            _minPos = _depth - _stroke;
+            _maxPos = _depth;
+
             if (_sensation > 0.0) {
-                _timeOfInStroke = _timeOfFastStroke;
-                _timeOfOutStroke = _timeOfStroke - _timeOfFastStroke;
-            // negative sensation, out is faster
+                _speedIn = _speedStepsPerS;
+                _speedOut = int(_speedStepsPerS / fscale(0.0, 100.0, 1.0, 5.0, abs(_sensation), 0.0));
             } else {
-                _timeOfOutStroke = _timeOfFastStroke;
-                _timeOfInStroke = _timeOfStroke - _timeOfFastStroke;
+                _speedOut = _speedStepsPerS;
+                _speedIn = int(_speedStepsPerS / fscale(0.0, 100.0, 1.0, 5.0, abs(_sensation), 0.0));
             }
+
+            // Calculate the acceleration for the in and out stroke
+            _accIn = min(uint(calcTrapezoidalAcceleration(_speedIn, _stroke)), _maxAcceleration);
+            _accOut = min(uint(calcTrapezoidalAcceleration(_speedOut, _stroke)), _maxAcceleration);
+
 #ifdef DEBUG_PATTERN
-            Serial.println("TimeOfInStroke: " + String(_timeOfInStroke));
-            Serial.println("TimeOfOutStroke: " + String(_timeOfOutStroke));
+            if (_speedOut > 0 && _speedIn > 0 && _accOut > 0 && _accIn > 0) {
+                Serial.println("SpeedOfInStroke: " + String(_speedIn));
+                Serial.println("SpeedOfOutStroke: " + String(_speedOut));
+            }
 #endif
         }
 };
@@ -284,54 +300,56 @@ class TeasingPounding : public Pattern {
 /*!
   @brief  Robot Stroke Pattern. Sensation controls the acceleration of the
   stroke. Positive value increase acceleration until it is a constant speed
-  motion (feels robotic). Neutral is equal to simple stroke (1/3, 1/3, 1/3).
-  Negative reduces acceleration into a triangle profile.
+  motion (feels robotic). Negative reduces acceleration into a triangle profile.
 */
 /**************************************************************************/
 class RoboStroke : public Pattern {
     public:
         RoboStroke(const char *str) : Pattern(str) {}
 
-        void setTimeOfStroke(float speed, float speedStepsPerS) override {
-             // In & Out have same time, so we need to divide by 2
-            _timeOfStroke = 0.5 * speed;
-        }
-
-        void setSensation(float sensation = 0, float sensationPercent = 0) override {
+        void setSensation(float sensation, float sensationPercent) override {
             _sensation = sensation;
-            // scale sensation into the range [0.05, 0.5] where 0 = 1/3
-            if (sensation >= 0 ) {
-              _x = fscale(0.0, 100.0, 1.0/3.0, 0.5, sensation, 0.0);
-            } else {
-              _x = fscale(0.0, 100.0, 1.0/3.0, 0.05, -sensation, 0.0);
-            }
+            _sensationPercent = sensationPercent;
+
+            // Calculate the acceleration based on the sensation value. Positive values increase acceleration, negative values decrease it.
+            _acceleration = fscale(-100.0, 100.0, 5000, _maxAcceleration, _sensation, 0.0);
+
 #ifdef DEBUG_PATTERN
-            Serial.println("Sensation:" + String(sensation,0) + " --> " + String(_x,6));
+            Serial.println("Acceleration:" + String(_acceleration));
 #endif
+
         }
 
-        motionParameter nextTarget(unsigned int index) {
+        void setTimeOfStroke(float speed, float speedStepsPerS) override {
+            _timeOfStroke = speed;
+            _speedStepsPerS = speedStepsPerS;
+
+            _speed = int(_speedStepsPerS);
+        }
+
+        motionParameter nextTarget(unsigned int index) override {
             // maximum speed of the trapezoidal motion
-            float speed = float(_stroke) / ((1 - _x) * _timeOfStroke);
-            _nextMove.speed = int(speed);
+            _nextMove.speed = _speed;
 
             // acceleration to meet the profile
-            _nextMove.acceleration = int(speed / (_x * _timeOfStroke));
+            _nextMove.acceleration = _acceleration;
 
             // odd stroke is moving out
             if (index % 2) {
-                _nextMove.stroke = _depth - _stroke;
+                _nextMove.stroke = _minPos;
 
             // even stroke is moving in
             } else {
-                _nextMove.stroke = _depth;
+                _nextMove.stroke = _maxPos;
             }
 
             _index = index;
             return _nextMove;
         }
     protected:
-        float _x = 1.0/3.0;
+        int _acceleration;
+        int _speed;
+
 };
 
 /**************************************************************************/
@@ -340,7 +358,7 @@ class RoboStroke : public Pattern {
   depth. The sensation value can change the speed ratio between in and out.
   Sensation > 0 make the in move faster (up to 5x) giving a hard pounding
   sensation. Values < 0 make the out move going faster. This gives a more
-  pleasing sensation. The time for the overall stroke remains the same for
+  pleasing sensation. The top speed of the stroke remains the same for
   all strokes, even half ones.
 */
 /**************************************************************************/
@@ -348,63 +366,71 @@ class HalfnHalf : public Pattern {
     public:
         HalfnHalf(const char *str) : Pattern(str) {}
 
-        motionParameter nextTarget(unsigned int index) {
+        motionParameter nextTarget(unsigned int index) override {
             // check if this is the very first
             if (index == 0) {
               //pattern started for the very fist time, so we start gentle with a half move
               _half = true;
             }
 
-            // set-up the stroke length
-            int stroke = _stroke;
-            if (_half == true) {
-                // half the stroke length
-                stroke = _stroke / 2;
-            }
-
             // odd stroke is moving out
             if (index % 2) {
                 // maximum speed of the trapezoidal motion
-                _nextMove.speed = int(1.5 * stroke/_timeOfOutStroke);
+                _nextMove.speed = _speedOut;
 
                 // acceleration to meet the profile
-                _nextMove.acceleration = int(3.0 * float(_nextMove.speed)/_timeOfOutStroke);
-                _nextMove.stroke = _depth - _stroke;
-                // every second move is half
-                _half = !_half;
+                _nextMove.acceleration = _accOut;
+                _nextMove.stroke = _minPos;
             // even stroke is moving in
             } else {
                 // maximum speed of the trapezoidal motion
-                _nextMove.speed = int(1.5 * stroke/_timeOfInStroke);
+                _nextMove.speed = _speedIn;
 
                 // acceleration to meet the profile
-                _nextMove.acceleration = int(3.0 * float(_nextMove.speed)/_timeOfInStroke);
-                _nextMove.stroke = (_depth - _stroke) + stroke;
-            }
+                _nextMove.acceleration = _accIn;
+            if (_half == true) {
+                // half the stroke length
+                _nextMove.stroke = _maxPos - _halfStroke;
+                _half = false;
+            } else {
+                _nextMove.stroke = _maxPos;
+                _half = true;
+            }}
+
             _index = index;
             return _nextMove;
         }
-    protected:
-        float _timeOfFastStroke = 1.0;
-        float _timeOfInStroke = 1.0;
-        float _timeOfOutStroke = 1.0;
+
+        protected:
+        int _accIn, _accOut;
+        int _speedIn, _speedOut;
+        int _halfStroke;
         bool _half = true;
-        void _calculatePatternPositions() {
-            // calculate the time it takes to complete the faster stroke
-            // Division by 2 because reference is a half stroke
-            _timeOfFastStroke = (0.5 * _timeOfStroke) / fscale(0.0, 100.0, 1.0, 5.0, abs(_sensation), 0.0);
-            // positive sensation, in is faster
+
+        void _calculatePatternPositions() override{
+
+            // Calculate the start/end of the stroke
+            _minPos = _depth - _stroke;
+            _maxPos = _depth;
+            _halfStroke = _stroke / 2;
+
             if (_sensation > 0.0) {
-                _timeOfInStroke = _timeOfFastStroke;
-                _timeOfOutStroke = _timeOfStroke - _timeOfFastStroke;
-            // negative sensation, out is faster
+                _speedIn = _speedStepsPerS;
+                _speedOut = int(_speedStepsPerS / fscale(0.0, 100.0, 1.0, 5.0, abs(_sensation), 0.0));
             } else {
-                _timeOfOutStroke = _timeOfFastStroke;
-                _timeOfInStroke = _timeOfStroke - _timeOfFastStroke;
+                _speedOut = _speedStepsPerS;
+                _speedIn = int(_speedStepsPerS / fscale(0.0, 100.0, 1.0, 5.0, abs(_sensation), 0.0));
             }
+
+            // Calculate the acceleration for the in and out stroke
+            _accIn = min(uint(calcTrapezoidalAcceleration(_speedIn, _stroke)), _maxAcceleration);
+            _accOut = min(uint(calcTrapezoidalAcceleration(_speedOut, _stroke)), _maxAcceleration);
+
 #ifdef DEBUG_PATTERN
-            Serial.println("TimeOfInStroke: " + String(_timeOfInStroke));
-            Serial.println("TimeOfOutStroke: " + String(_timeOfOutStroke));
+            if (_speedOut > 0 && _speedIn > 0 && _accOut > 0 && _accIn > 0) {
+                Serial.println("SpeedOfInStroke: " + String(_speedIn));
+                Serial.println("SpeedOfOutStroke: " + String(_speedOut));
+            }
 #endif
         }
 };
@@ -420,57 +446,33 @@ class Deeper : public Pattern {
     public:
         Deeper(const char *str) : Pattern(str) {}
 
-        void setTimeOfStroke(float speed, float speedStepsPerS) override {
-             // In & Out have same time, so we need to divide by 2
-            _timeOfStroke = 0.5 * speed;
-        }
-
-        void setSensation(float sensation, float sensationPercent) override {
-            _sensation = sensation;
-
-            // maps sensation to useful values [2,22] with 12 beeing neutral
-            if (sensation < 0) {
-                _countStrokesForRamp = map(sensation, -100, 0, 2, 11);
-            } else {
-                _countStrokesForRamp = map(sensation, 0, 100, 11, 32);
-            }
-#ifdef DEBUG_PATTERN
-            Serial.println("_countStrokesForRamp: " + String(_countStrokesForRamp));
-#endif
-        }
-
-        motionParameter nextTarget(unsigned int index) {
-            // How many steps is each stroke advancing
-            int slope = _stroke / (_countStrokesForRamp);
+        motionParameter nextTarget(unsigned int index) override {
 
             // The pattern recycles so we use modulo to get a cycling index.
             // Factor 2 because index increments with each full stroke twice
             // add 1 because modulo = 0 is index = 1
             int cycleIndex = (index / 2) % _countStrokesForRamp + 1;
 
-            // This might be not smooth, as the insertion depth may jump when
-            // sensation is adjusted.
-
             // Amplitude is slope * cycleIndex
-            int amplitude = slope * cycleIndex;
+            int amplitude = _slope * cycleIndex;
 #ifdef DEBUG_PATTERN
             Serial.println("amplitude: " + String(amplitude)
                          + " cycleIndex: " + String(cycleIndex));
 #endif
 
             // maximum speed of the trapezoidal motion
-            _nextMove.speed = int(1.5 * amplitude/_timeOfStroke);
+            _nextMove.speed = int(_speedStepsPerS);
 
             // acceleration to meet the profile
-            _nextMove.acceleration = int(3.0 * _nextMove.speed/_timeOfStroke);
+            _nextMove.acceleration = min(uint(calcTrapezoidalAcceleration(_speedStepsPerS, _stroke)), _maxAcceleration);
 
             // odd stroke is moving out
             if (index % 2) {
-                _nextMove.stroke = _depth - _stroke;
+                _nextMove.stroke = _minPos;
 
             // even stroke is moving in
             } else {
-                _nextMove.stroke = (_depth - _stroke) + amplitude;
+                _nextMove.stroke = min(_minPos + amplitude, _maxPos);
             }
 
             _index = index;
@@ -479,7 +481,30 @@ class Deeper : public Pattern {
 
     protected:
         int _countStrokesForRamp = 2;
+        int _slope = 0;
 
+        void _calculatePatternPositions() override{
+
+            // Calculate the start/end of the stroke
+            _minPos = _depth - _stroke;
+            _maxPos = _depth;
+
+            // maps sensation to useful values [2,22] with 12 beeing neutral
+            if (_sensation < 0) {
+                _countStrokesForRamp = map(_sensation, -100, 0, 2, 11);
+            } else {
+                _countStrokesForRamp = map(_sensation, 0, 100, 11, 32);
+            }
+
+#ifdef DEBUG_PATTERN
+            Serial.println("_countStrokesForRamp: " + String(_countStrokesForRamp));
+#endif
+
+            // How many steps is each stroke advancing
+            _slope = _stroke / _countStrokesForRamp;
+
+
+        }
 };
 
 /**************************************************************************/
@@ -493,11 +518,6 @@ class StopNGo : public Pattern {
     public:
         StopNGo(const char *str) : Pattern(str) {}
 
-        void setTimeOfStroke(float speed, float speedStepsPerS) override {
-             // In & Out have same time, so we need to divide by 2
-            _timeOfStroke = 0.5 * speed;
-        }
-
         void setSensation(float sensation, float sensationPercent) override {
             _sensation = sensation;
 
@@ -505,31 +525,30 @@ class StopNGo : public Pattern {
             _updateDelay(map(sensation, -100, 100, 100, 10000));
         }
 
-        motionParameter nextTarget(unsigned int index) {
+
+        motionParameter nextTarget(unsigned int index) override {
             // maximum speed of the trapezoidal motion
-            _nextMove.speed = int(1.5 * _stroke/_timeOfStroke);
+            _nextMove.speed = int(_speedStepsPerS);
 
             // acceleration to meet the profile
-            _nextMove.acceleration = int(3.0 * _nextMove.speed/_timeOfStroke);
+            _nextMove.acceleration = acceleration;
 
             // adds a delay between each stroke
             if (_isStillDelayed() == false) {
 
                 // odd stroke is moving out
                 if (index % 2) {
-                    _nextMove.stroke = _depth - _stroke;
+                    _nextMove.stroke = _minPos;
 
                     if (_strokeIndex >= _strokeSeriesIndex) {
                         // Reset stroke index to 1
                         _strokeIndex = 0;
 
-                        // change count direction once we reached the maximum number of strokes
                         if (_strokeSeriesIndex >= _numberOfStrokes) {
+                            // change count direction once we reached the maximum number of strokes
                             _countStrokesUp = false;
-                        }
-
-                        // change count direction once we reached one stroke counting down
-                        if (_strokeSeriesIndex <= 1) {
+                        } else if (_strokeSeriesIndex <= 1) {
+                            // change count direction once we reached one stroke counting down
                             _countStrokesUp = true;
                         }
 
@@ -547,7 +566,7 @@ class StopNGo : public Pattern {
 
                 // even stroke is moving in
                 } else {
-                    _nextMove.stroke = _depth;
+                    _nextMove.stroke = _maxPos;
                     // Increment stroke index by one
                     _strokeIndex++;
                 }
@@ -562,11 +581,21 @@ class StopNGo : public Pattern {
         }
 
     protected:
-        int _numberOfStrokes = 5;
+        const int _numberOfStrokes = 5;
+
         int _strokeSeriesIndex = 1;
         int _strokeIndex = 0;
         bool _countStrokesUp = true;
+        int acceleration;
 
+        void _calculatePatternPositions() override{
+            // Calculate the start/end of the stroke
+            _minPos = _depth - _stroke;
+            _maxPos = _depth;
+
+            // Calculate the acceleration for the in and out stroke
+            acceleration = min(uint(calcTrapezoidalAcceleration(_speedStepsPerS, _stroke)), _maxAcceleration);
+        }
 };
 
 /**************************************************************************/
@@ -584,49 +613,31 @@ class Insist : public Pattern {
         void setSensation(float sensation, float sensationPercent) override {
             _sensation = sensation;
 
-            // make invert sensation and make into a fraction of the stroke distance
-            _strokeFraction = (100 - abs(sensation))/100.0f;
+            // Create a stroke fraction from 0.0 to 1.0 based on the sensation value. This will be used to reduce the effective stroke length.
+            _strokeFraction = constrain(abs(sensationPercent), 0.001, 1.0);
 
+            // Determine if the stroke is in front or back based on the sign of the sensation value.
             _strokeInFront = (sensation > 0) ? true : false;
 
             _calculatePatternPositions();
         }
 
-        void setTimeOfStroke(float speed = 0) {
-             // In & Out have same time, so we need to divide by 2
-            _timeOfStroke = 0.5 * speed;
-            _calculatePatternPositions();
-        }
-
-        motionParameter nextTarget(unsigned int index) {
+        motionParameter nextTarget(unsigned int index) override {
 
             // acceleration & speed to meet the profile
             _nextMove.acceleration = _acceleration;
-            _nextMove.speed = _speed;
+            _nextMove.speed = _speedStepsPerS;
 
-            if (_strokeInFront) {
-                // odd stroke is moving out
-                if (index % 2) {
-                    _nextMove.stroke = _depth - _realStroke;
+            // odd stroke is moving out
+            if (index % 2) {
+                _nextMove.stroke = _minPos;
 
-                // even stroke is moving in
-                } else {
-                    _nextMove.stroke = _depth;
-                }
-
+            // even stroke is moving in
             } else {
-                // odd stroke is moving out
-                if (index % 2) {
-                    _nextMove.stroke = _depth - _stroke;
-
-                // even stroke is moving in
-                } else {
-                    _nextMove.stroke = (_depth - _stroke) + _realStroke;
-                }
+                _nextMove.stroke = _maxPos;
             }
 
             _index = index;
-
             return _nextMove;
         }
 
@@ -636,15 +647,23 @@ class Insist : public Pattern {
         int _realStroke = 0;
         float _strokeFraction = 1.0;
         bool _strokeInFront = false;
-        void _calculatePatternPositions() {
-            // maximum speed of the longest trapezoidal motion (full stroke)
-            _speed = int(1.5 * _stroke/_timeOfStroke);
-
-            // Acceleration to hold 1/3 profile with fractional strokes
-            _acceleration = int(3.0 * _nextMove.speed/(_timeOfStroke * _strokeFraction));
+        void _calculatePatternPositions() override{
 
             // Calculate fractional stroke length
-            _realStroke = int((float)_stroke * _strokeFraction);
+            _realStroke = int(_stroke - _stroke * _strokeFraction);
+
+            // Calculate the max/min position in steps
+            if (_strokeInFront) {
+                _maxPos = _depth;
+                _minPos = _maxPos - _realStroke;
+            } else {
+                _minPos = _depth - _stroke;
+                _maxPos = _minPos + _realStroke;
+            }
+
+            // Acceleration to hold 1/3 profile with fractional strokes
+            _acceleration = constrain(int(calcTrapezoidalAcceleration(_speedStepsPerS, _realStroke)), 0, _maxAcceleration);
+
         }
 
 };
@@ -661,6 +680,9 @@ class SensualDistance : public Pattern {
 
     motionParameter nextTarget(unsigned int index) override {
         int phase = index % 3; // Number of moves in a cycle
+                // Set speed and acceleration
+                _nextMove.speed = _speedFast;
+                _nextMove.acceleration = _accelFast;
 
         switch (phase) {
             case 0:
@@ -671,9 +693,6 @@ class SensualDistance : public Pattern {
                 }else{
                     _nextMove.stroke = _maxPos;
                 }
-                // Set speed and acceleration
-                _nextMove.speed = _speedFast;
-                _nextMove.acceleration = _accelFast;
                 break;
             case 1:
                 // Set Stroke length
@@ -692,8 +711,6 @@ class SensualDistance : public Pattern {
             case 2:
                 // Thrust all the way back fast
                 _nextMove.stroke = _minPos;
-                _nextMove.speed = _speedFast;
-                _nextMove.acceleration = _accelFast;
                 break;
         }
 
@@ -738,8 +755,9 @@ class SensualDistance : public Pattern {
         _accelFast = int(constrain(desiredAccelStepsperS2_fast, (1), safeMaxAccel));
         _accelSlow = int(constrain(desiredAccelStepsperS2_slow, (1), min(desiredAccelStepsperS2_fast,safeMaxAccel)));
 
+
         // Calculate the distance of the fast part of the stroke based on the sensation and the _slowMaxDistanceFactor
-        _distFast = int((_stroke * _slowMaxDistanceFactor) * (abs(_sensation) / 100.0));
+        _distFast = int((_stroke * _slowMaxDistanceFactor) * abs(_sensationPercent));
 
     }
 };
